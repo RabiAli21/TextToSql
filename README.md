@@ -1,23 +1,55 @@
-# 🤖 Text-to-SQL AI Expert
+# 🤖 AI-Powered Text-to-SQL Analytics Assistant
 
-A simple **Text-to-SQL application** that converts natural language questions into SQL queries using Google's Gemini API and executes those queries on a SQLite database.
+An AI-powered **Text-to-SQL Analytics Assistant** that allows users to ask questions about structured data in natural language. The application uses **Google Gemini** to convert user questions into SQL queries, executes them on a **SQLite database**, handles SQL errors with automatic query correction, and presents the results with interactive visualizations.
 
-The goal of this project is to allow users to interact with structured data using normal English instead of writing SQL manually.
+## 🚀 Live Demo
 
-**🔗 Live demo:** [text-to-mysql.streamlit.app](https://text-to-mysql.streamlit.app/)
+🔗 **Streamlit App:**  [text-to-mysql.streamlit.app](https://text-to-mysql.streamlit.app/)
 
-## 🚀 Features
+## ✨ Features
 
-* Convert natural language questions into SQL queries
-* Uses Google Gemini for SQL generation
-* SQLite database integration
-* Automatically reads database tables and columns
-* Executes generated SQL queries
-* Displays query results through a Streamlit interface
-* Supports multiple CSV datasets
-* Dynamic database schema handling
+* 🗣️ Ask database questions using natural language
+* 🤖 Generate SQL queries using Google Gemini
+* 🗄️ Automatically use the database schema
+* 🔍 Display the generated SQL query
+* ⚡ Execute SQL queries on SQLite
+* 🛠️ Automatically detect and correct SQL errors
+* 📊 Display query results as interactive tables
+* 📈 Automatically generate visualizations for suitable query results
+* 🌐 Streamlit web interface
+* 📁 Supports CSV-based datasets
 
-## 🛠️ Technologies Used
+## 🧠 How It Works
+
+```text
+User Question
+      ↓
+Database Schema
+      ↓
+Google Gemini
+      ↓
+SQL Query Generation
+      ↓
+SQL Validation & Execution
+      ↓
+   ┌───────────────┐
+   │               │
+ Success         Error
+   │               │
+   ↓               ↓
+Result        Gemini Correction
+   │               │
+   │               ↓
+   │           Corrected SQL
+   │               │
+   └───────→ SQLite Database
+                   ↓
+             Query Results
+                   ↓
+          Table + Visualization
+```
+
+## 🛠️ Tech Stack
 
 * **Python**
 * **Google Gemini API**
@@ -34,68 +66,46 @@ TextToSql/
 ├── app.py
 ├── sql.py
 ├── requirements.txt
-├── .gitignore
 ├── README.md
+├── .gitignore
 │
 ├── dataset/
 │   └── *.csv
 │
+├── revanstack.db
 └── .env
 ```
 
-> `.env`, `revanstack.db`, and `venv/` should not be uploaded to GitHub.
+> `.env` should never be uploaded to GitHub.
 
-## ⚙️ How It Works
+## ⚙️ Setup
 
-```text
-User Question
-      ↓
-Streamlit Interface
-      ↓
-Database Schema
-      ↓
-Gemini API
-      ↓
-Generated SQL Query
-      ↓
-SQLite Database
-      ↓
-Query Result
-      ↓
-Streamlit
+### 1. Clone the repository
+
+```bash
+git clone YOUR_GITHUB_REPOSITORY_URL
+cd TextToSql
 ```
 
-### Example
+### 2. Create a virtual environment
 
-User asks:
-
-```text
-How many customers are there?
+```bash
+python -m venv venv
 ```
 
-Gemini generates:
+Activate it on Windows:
 
-```sql
-SELECT COUNT(*) FROM customers;
+```bash
+venv\Scripts\activate
 ```
 
-The query is then executed against the SQLite database and the result is displayed in the application.
-
-## 📋 Requirements
-
-Install the required Python packages:
+### 3. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Or install them manually:
-
-```bash
-pip install streamlit pandas python-dotenv google-generativeai
-```
-
-## 🔑 API Key Setup
+## 🔑 API Key Configuration
 
 Create a `.env` file in the project directory:
 
@@ -103,11 +113,15 @@ Create a `.env` file in the project directory:
 GOOGLE_API_KEY=your_google_api_key
 ```
 
-Never upload your `.env` file or API key to GitHub.
+The application reads the API key using `python-dotenv`.
 
-## 🗄️ Create the Database
+**Never commit your `.env` file or expose your API key publicly.**
 
-The `sql.py` file loads CSV files from the `dataset` folder into SQLite tables.
+## 🗄️ Database
+
+The project uses **SQLite** as its database.
+
+The `sql.py` script loads CSV files from the `dataset` folder and converts them into SQLite tables.
 
 Run:
 
@@ -115,7 +129,7 @@ Run:
 python sql.py
 ```
 
-This creates:
+This creates/updates:
 
 ```text
 revanstack.db
@@ -123,51 +137,138 @@ revanstack.db
 
 ## ▶️ Run the Application
 
-Start Streamlit with:
+Start the Streamlit application:
 
 ```bash
 streamlit run app.py
 ```
 
-Then open the local URL provided by Streamlit.
+The application will open in your browser.
 
-## 💡 Example Questions
+## 💬 Example Questions
 
 You can ask questions such as:
 
-* How many records are in the table?
-* What is the average value?
-* Show the top 5 records.
-* Which category has the highest sales?
-* What is the total sales amount?
-* Show customers from Jaipur.
-* Which product has the highest price?
+```text
+What are the top 5 active accounts?
 
-The application converts these questions into SQL automatically.
+What is the total revenue?
+
+Which customers have the highest spending?
+
+Show the average revenue by category.
+
+What are the top 10 products?
+
+How many active customers are there?
+```
+
+The application converts the natural-language question into SQL and executes it against the database.
+
+## 📊 Query Result & Visualization
+
+The application displays:
+
+1. **Generated SQL**
+2. **Query Result**
+3. **Automatic Visualization** when the result contains suitable categorical and numerical data
+
+For example:
+
+```text
+User:
+Top 5 accounts by MRR
+        ↓
+Gemini generates SQL
+        ↓
+SQLite executes SQL
+        ↓
+Result displayed as a table
+        ↓
+Bar chart generated automatically
+```
+
+## 🛠️ Automatic SQL Error Correction
+
+If Gemini generates an invalid SQL query, the application captures the SQLite error and sends the following information back to Gemini:
+
+* Original user question
+* Database schema
+* Generated SQL
+* SQLite error
+
+Gemini then generates a corrected SQL query and the application attempts to execute it again.
+
+This creates a self-correction workflow:
+
+```text
+Generated SQL
+      ↓
+SQLite
+      ↓
+SQL Error
+      ↓
+Gemini
+      ↓
+Corrected SQL
+      ↓
+SQLite
+      ↓
+Result
+```
+
+## ☁️ Deployment
+
+The application can be deployed using **Streamlit Cloud**.
+
+For deployment:
+
+1. Push the project to GitHub.
+2. Connect the repository to Streamlit Cloud.
+3. Set `app.py` as the main application file.
+4. Add the required packages in `requirements.txt`.
+5. Add your Google API key to Streamlit Cloud Secrets.
+
+Example secret:
+
+```toml
+GOOGLE_API_KEY = "your_google_api_key"
+```
+
+## 📦 Requirements
+
+The main dependencies are:
+
+```text
+streamlit
+pandas
+python-dotenv
+google-generativeai
+```
 
 ## 🔐 Security
 
-The Google API key is stored in `.env` and should never be committed to GitHub.
+Sensitive credentials should never be committed to GitHub.
 
-The `.gitignore` file excludes:
+The `.gitignore` file should include:
 
 ```text
 .env
 venv/
 __pycache__/
 *.pyc
-revanstack.db
 ```
 
 ## 🔮 Future Improvements
 
-* Add SQL query display in the UI
-* Add charts and visualizations
-* Add conversation history
-* Improve error handling
-* Add support for more database systems
-* Add query validation before execution
-* Add natural-language explanations of SQL results
+* Add query history
+* Support multiple database types such as MySQL and PostgreSQL
+* Add advanced chart recommendations
+* Add conversational follow-up questions
+* Add authentication
+* Improve SQL validation and security
+* Add downloadable query results
+* Add dashboard generation from natural-language questions
 
 ## 👨‍💻 Author
 
