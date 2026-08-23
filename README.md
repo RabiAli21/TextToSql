@@ -4,6 +4,8 @@ A simple **Text-to-SQL application** that converts natural language questions in
 
 The goal of this project is to allow users to interact with structured data using normal English instead of writing SQL manually.
 
+**🔗 Live demo:** [text-to-mysql.streamlit.app](https://text-to-mysql.streamlit.app/)
+
 ## 🚀 Features
 
 * Convert natural language questions into SQL queries
