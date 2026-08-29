@@ -7,6 +7,9 @@ import sqlite3
 import os 
 import google.generativeai as genai
 
+if "history" not in st.session_state:
+    st.session_state.history = []
+
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 
@@ -44,7 +47,12 @@ def get_response(question, prompt):
     schema = get_schema("revanstack.db")
     final_prompt = prompt[0].format(schema=schema)
     response = model.generate_content([final_prompt, question])
-    return response.text.strip()
+    query = response.text.strip()
+
+    query = query.replace("```sql", "")
+    query = query.replace("```", "")
+
+    return query.strip()
 
 
 def read_sql(query, db):
@@ -121,25 +129,89 @@ def show_chart(df):
     if df is None or df.empty:
         return
 
-    if len(df.columns) < 2:
-        return
-
-    x_column = df.columns[0]
-
     numeric_columns = df.select_dtypes(include="number").columns
+    non_numeric_columns = df.select_dtypes(exclude="number").columns
 
-    if len(numeric_columns) == 0:
+    # Two numeric columns → Scatter chart
+    if len(numeric_columns) >= 2:
+
+        st.subheader("📊 Visualization")
+
+        chart_data = df[[numeric_columns[0], numeric_columns[1]]].copy()
+
+        st.scatter_chart(
+            chart_data,
+            x=numeric_columns[0],
+            y=numeric_columns[1]
+        )
+
         return
 
-    y_column = numeric_columns[0]
+    # One numeric + one categorical/date column
+    if len(numeric_columns) >= 1 and len(non_numeric_columns) >= 1:
 
-    st.subheader("📊 Visualization")
+        x_column = non_numeric_columns[0]
+        y_column = numeric_columns[0]
 
-    chart_data = df[[x_column, y_column]].copy()
+        chart_data = df[[x_column, y_column]].copy()
 
-    chart_data = chart_data.set_index(x_column)
+        # Check whether the first column looks like a date
+        date_column = pd.to_datetime(
+            chart_data[x_column],
+            errors="coerce"
+        )
 
-    st.bar_chart(chart_data)
+        if date_column.notna().sum() == len(chart_data):
+
+            chart_data[x_column] = date_column
+            chart_data = chart_data.sort_values(x_column)
+            chart_data = chart_data.set_index(x_column)
+
+            st.subheader("📈 Visualization")
+
+            st.line_chart(chart_data[y_column])
+
+        else:
+
+            chart_data = chart_data.set_index(x_column)
+
+            st.subheader("📊 Visualization")
+
+            st.bar_chart(chart_data[y_column])
+
+
+def explain_result(question, query, df):
+
+    model = genai.GenerativeModel("gemini-3.6-flash")
+
+    result = df.to_string(index=False)
+
+    prompt = f"""
+You are a data analyst.
+
+Explain the SQL query result to the user in simple, clear English.
+
+User question:
+{question}
+
+SQL query:
+{query}
+
+Query result:
+{result}
+
+Rules:
+- Explain what the result means.
+- Mention the most important findings.
+- Use actual values from the result.
+- Keep the explanation concise.
+- Do not explain the SQL syntax.
+- Do not invent information that is not present in the result.
+"""
+
+    response = model.generate_content(prompt)
+
+    return response.text.strip()
 
 
 
@@ -149,20 +221,39 @@ You are an expert SQL database manager.
 Convert the user's question into a valid SQLite SQL query.
 
 Rules:
-- Use only the tables and columns in the schema.
+- Use only tables and columns from the schema.
 - Do not invent table or column names.
 - Return only the SQL query.
 - Do not return explanations or markdown.
+- Format the SQL query on multiple lines so it is easy to read.
+- Put SELECT, FROM, JOIN, WHERE, GROUP BY, ORDER BY and LIMIT on separate lines when applicable.
+- Use proper indentation for columns and conditions.
 
-Schema:
+Database Schema:
 {schema}
 """]
 
 # streamlit App
 
 st.set_page_config(page_title="SQL Expert", page_icon="🔍")
+with st.sidebar:
 
-st.header("🤖 AI SQL Expert")
+    st.header("🕘 Query History")
+
+    if st.session_state.history:
+
+        for i, item in enumerate(
+            reversed(st.session_state.history),
+            1
+        ):
+            st.write(f"{i}. {item}")
+
+    else:
+
+        st.write("No queries yet.")
+
+st.title("🤖 AI Analytics Assistant")
+st.caption("Ask questions about your data in natural language")
 
 question = st.text_input("Input : ",key = "input")
 
@@ -172,7 +263,10 @@ if submit:
 
     response = get_response(question, prompt)
 
-    st.subheader("Generated SQL")
+    # Save question to history
+    st.session_state.history.append(question)
+
+    st.subheader("💻 Generated SQL")
     st.code(response, language="sql")
 
     data, error = read_sql(response, "revanstack.db")
@@ -190,7 +284,7 @@ if submit:
             schema
         )
 
-        st.subheader("Corrected SQL")
+        st.subheader("🔧 Corrected SQL")
         st.code(fixed_query, language="sql")
 
         data, error = read_sql(
@@ -199,19 +293,47 @@ if submit:
         )
 
         if error:
+
             st.error(f"SQL Error: {error}")
 
         else:
+
             st.success("Query automatically corrected!")
 
-            st.subheader("Query Result")
-            st.dataframe(data, use_container_width=True)
+            st.subheader("📋 Query Result")
+            st.dataframe(
+                data,
+                use_container_width=True
+            )
 
             show_chart(data)
 
+            st.subheader("📝 AI Analysis")
+
+            explanation = explain_result(
+                question,
+                fixed_query,
+                data
+            )
+
+            st.write(explanation)
+
     else:
 
-        st.subheader("Query Result")
-        st.dataframe(data, use_container_width=True)
+        st.subheader("📋 Query Result")
+        st.dataframe(
+            data,
+            use_container_width=True
+        )
 
         show_chart(data)
+
+        st.subheader("📝 AI Analysis")
+
+        explanation = explain_result(
+            question,
+            response,
+            data
+        )
+
+        st.write(explanation)
