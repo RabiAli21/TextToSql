@@ -217,24 +217,6 @@ SQLite
 Result
 ```
 
-## ☁️ Deployment
-
-The application can be deployed using **Streamlit Cloud**.
-
-For deployment:
-
-1. Push the project to GitHub.
-2. Connect the repository to Streamlit Cloud.
-3. Set `app.py` as the main application file.
-4. Add the required packages in `requirements.txt`.
-5. Add your Google API key to Streamlit Cloud Secrets.
-
-Example secret:
-
-```toml
-GOOGLE_API_KEY = "your_google_api_key"
-```
-
 ## 📦 Requirements
 
 The main dependencies are:
