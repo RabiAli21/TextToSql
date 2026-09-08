@@ -1,4 +1,7 @@
 streamlit
 pandas
+matplotlib
+seaborn
 python-dotenv
-google-generativeai
+mysql-connector-python
+openai
