@@ -93,7 +93,6 @@ The application:
 ```text
 TextToSql/
 |
-+-- app1.py
 +-- app.py
 +-- sql.py
 +-- revanstack.db
