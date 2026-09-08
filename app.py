@@ -6,6 +6,9 @@ import streamlit as st
 import sqlite3
 import os 
 import google.generativeai as genai
+import matplotlib.pyplot as plt 
+import seaborn as sns
+import mysql.connector
 
 if "history" not in st.session_state:
     st.session_state.history = []
@@ -13,46 +16,232 @@ if "history" not in st.session_state:
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 
-def get_schema(db):
-    con = sqlite3.connect(db)
-    cur = con.cursor()
+def connect_mysql(host, port, user, password, database):
+    return mysql.connector.connect(
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database=database
+    )
 
-    cur.execute("""
-        SELECT name
-        FROM sqlite_master
-        WHERE type='table'
-    """)
 
-    tables = cur.fetchall()
+def get_schema(db_type, db, mysql_config=None):
 
     schema = ""
 
-    for table in tables:
-        table_name = table[0]
+    if db_type == "SQLite":
 
-        cur.execute(f"PRAGMA table_info([{table_name}])")
-        columns = cur.fetchall()
+        con = sqlite3.connect(db)
+        cur = con.cursor()
 
-        schema += f"Table: {table_name}\n"
-        schema += "Columns: " + ", ".join(column[1] for column in columns)
-        schema += "\n\n"
+        cur.execute("""
+            SELECT name
+            FROM sqlite_master
+            WHERE type='table'
+            AND name NOT LIKE 'sqlite_%'
+        """)
 
-    con.close()
+        tables = [row[0] for row in cur.fetchall()]
+
+        for table_name in tables:
+            cur.execute(f'PRAGMA table_info("{table_name}")')
+            columns = cur.fetchall()
+            schema += f"Table: {table_name}\n"
+            schema += "Columns: " + ", ".join(column[1] for column in columns)
+            schema += "\n\n"
+
+        con.close()
+
+    else:
+
+        con = connect_mysql(**mysql_config)
+        cur = con.cursor()
+        cur.execute("SHOW TABLES")
+        tables = [row[0] for row in cur.fetchall()]
+
+        for table_name in tables:
+            cur.execute(f'DESCRIBE `{table_name}`')
+            columns = cur.fetchall()
+            schema += f"Table: {table_name}\n"
+            schema += "Columns: " + ", ".join(column[0] for column in columns)
+            schema += "\n\n"
+
+        cur.close()
+        con.close()
 
     return schema
 
-def get_response(question, prompt):
+
+def get_database_info(db_type, db, mysql_config=None):
+
+    database_info = {}
+
+    if db_type == "SQLite":
+        con = sqlite3.connect(db)
+        cur = con.cursor()
+        cur.execute("""
+            SELECT name
+            FROM sqlite_master
+            WHERE type='table'
+            AND name NOT LIKE 'sqlite_%'
+        """)
+        tables = [row[0] for row in cur.fetchall()]
+
+        for table in tables:
+            cur.execute(f'PRAGMA table_info("{table}")')
+            columns = cur.fetchall()
+            cur.execute(f'SELECT COUNT(*) FROM "{table}"')
+            row_count = cur.fetchone()[0]
+            database_info[table] = {
+                "rows": row_count,
+                "columns": [
+                    {
+                        "name": column[1],
+                        "type": column[2],
+                        "not_null": column[3],
+                        "primary_key": column[5]
+                    }
+                    for column in columns
+                ]
+            }
+        con.close()
+
+    else:
+        con = connect_mysql(**mysql_config)
+        cur = con.cursor()
+        cur.execute("SHOW TABLES")
+        tables = [row[0] for row in cur.fetchall()]
+
+        for table in tables:
+            cur.execute(f'DESCRIBE `{table}`')
+            columns = cur.fetchall()
+            cur.execute(f'SELECT COUNT(*) FROM `{table}`')
+            row_count = cur.fetchone()[0]
+            database_info[table] = {
+                "rows": row_count,
+                "columns": [
+                    {
+                        "name": column[0],
+                        "type": column[1],
+                        "not_null": 1 if column[2] == "NO" else 0,
+                        "primary_key": 1 if column[3] == "PRI" else 0
+                    }
+                    for column in columns
+                ]
+            }
+        cur.close()
+        con.close()
+
+    return database_info
+
+
+def get_sample_data(table, db_type, db, mysql_config=None, limit=5):
+
+    if db_type == "SQLite":
+        con = sqlite3.connect(db)
+        df = pd.read_sql_query(
+            f'SELECT * FROM "{table}" LIMIT {limit}',
+            con
+        )
+        con.close()
+    else:
+        con = connect_mysql(**mysql_config)
+        df = pd.read_sql_query(
+            f'SELECT * FROM `{table}` LIMIT {limit}',
+            con
+        )
+        con.close()
+
+    return df
+
+
+def explain_database(db_type, db, mysql_config=None):
+
+    database_info = get_database_info(db_type, db, mysql_config)
+    schema_text = ""
+
+    for table, info in database_info.items():
+        schema_text += f"\nTable: {table}\n"
+        schema_text += f"Rows: {info['rows']}\n"
+        schema_text += "Columns:\n"
+        for column in info["columns"]:
+            schema_text += f"- {column['name']} ({column['type']})\n"
 
     model = genai.GenerativeModel("gemini-3.6-flash")
-    schema = get_schema("revanstack.db")
-    final_prompt = prompt[0].format(schema=schema)
+    prompt = f"""
+You are a senior data analyst.
+
+Analyze the following database structure and explain it
+to a non-technical user.
+
+DATABASE TYPE:
+{db_type}
+
+DATABASE INFORMATION:
+{schema_text}
+
+Explain:
+1. What this database appears to contain.
+2. What each table represents.
+3. Important columns in each table.
+4. Possible relationships between tables.
+5. What kind of business analysis can be performed.
+6. Useful questions a user could ask.
+7. Any obvious data-quality considerations based only on the provided information.
+
+Rules:
+- Use only the provided information.
+- Do not invent facts.
+- Keep the explanation clear and concise.
+- Use headings and bullet points.
+"""
+
+    response = model.generate_content(prompt)
+    return response.text.strip()
+
+
+def get_response(question, prompt, db_type, db, mysql_config=None):
+
+    model = genai.GenerativeModel("gemini-3.6-flash")
+    schema = get_schema(db_type, db, mysql_config)
+    final_prompt = prompt[0].format(
+        schema=schema,
+        database_type=db_type
+    )
     response = model.generate_content([final_prompt, question])
     query = response.text.strip()
-
-    query = query.replace("```sql", "")
-    query = query.replace("```", "")
-
+    query = query.replace("```sql", "").replace("```", "")
     return query.strip()
+
+
+def read_mysql(query, host, port, user, password, database):
+
+    connection = None
+
+    try:
+        connection = connect_mysql(
+            host, port, user, password, database
+        )
+        cursor = connection.cursor()
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        columns = [column[0] for column in cursor.description]
+        df = pd.DataFrame(rows, columns=columns)
+        cursor.close()
+        connection.close()
+        return df, None
+
+    except Exception as e:
+        if connection:
+            connection.close()
+        return None, str(e)
+
+
+def execute_query(query, db_type, db, mysql_config=None):
+    if db_type == "SQLite":
+        return read_sql(query, db)
+    return read_mysql(query, **mysql_config)
 
 
 def read_sql(query, db):
@@ -86,12 +275,14 @@ def read_sql(query, db):
 
 
 
-def fix_sql(query, error, question, schema):
+def fix_sql(query, error, question, schema, db_type):
 
     model = genai.GenerativeModel("gemini-3.6-flash")
-
     prompt = f"""
-You are an expert SQLite SQL debugger.
+You are an expert SQL debugger.
+
+Database type:
+{db_type}
 
 User question:
 {question}
@@ -102,82 +293,370 @@ Database schema:
 Generated SQL:
 {query}
 
-SQLite error:
+Database error:
 {error}
 
 Fix the SQL query so it correctly answers the user's question.
 
 Rules:
 - Use only tables and columns from the schema.
+- Use SQL syntax appropriate for {db_type}.
 - Return only the corrected SQL query.
 - Do not include markdown or explanations.
 """
-
     response = model.generate_content(prompt)
-
     fixed_query = response.text.strip()
-
-    fixed_query = fixed_query.replace("```sql", "")
-    fixed_query = fixed_query.replace("```", "")
-
+    fixed_query = fixed_query.replace("```sql", "").replace("```", "")
     return fixed_query.strip()
 
 
-
-def show_chart(df):
+def show_chart(question, query, df):
 
     if df is None or df.empty:
         return
 
-    numeric_columns = df.select_dtypes(include="number").columns
-    non_numeric_columns = df.select_dtypes(exclude="number").columns
+    st.subheader("📊 AI Visualization")
 
-    # Two numeric columns → Scatter chart
-    if len(numeric_columns) >= 2:
+    with st.spinner(
+        "AI is selecting the best visualization..."
+    ):
 
-        st.subheader("📊 Visualization")
+        recommendation = get_chart_recommendation(
+            question,
+            query,
+            df
+        )
 
-        chart_data = df[[numeric_columns[0], numeric_columns[1]]].copy()
+    validated = validate_chart_recommendation(
+        recommendation,
+        question,
+        df
+    )
 
-        st.scatter_chart(
-            chart_data,
-            x=numeric_columns[0],
-            y=numeric_columns[1]
+    if validated is None:
+
+        st.info(
+            "No suitable visualization could be determined."
         )
 
         return
 
-    # One numeric + one categorical/date column
-    if len(numeric_columns) >= 1 and len(non_numeric_columns) >= 1:
+    chart_type = validated.get(
+        "chart_type",
+        "none"
+    )
 
-        x_column = non_numeric_columns[0]
-        y_column = numeric_columns[0]
+    if chart_type == "none":
 
-        chart_data = df[[x_column, y_column]].copy()
-
-        # Check whether the first column looks like a date
-        date_column = pd.to_datetime(
-            chart_data[x_column],
-            errors="coerce"
+        st.info(
+            "This result is better represented as a table."
         )
 
-        if date_column.notna().sum() == len(chart_data):
+        return
 
-            chart_data[x_column] = date_column
-            chart_data = chart_data.sort_values(x_column)
-            chart_data = chart_data.set_index(x_column)
+    st.caption(
+        f"AI selected: {chart_type.title()} chart"
+    )
 
-            st.subheader("📈 Visualization")
+    create_visualization(
+        recommendation,
+        df
+    )
 
-            st.line_chart(chart_data[y_column])
 
-        else:
+def get_chart_recommendation(question, query, df):
 
-            chart_data = chart_data.set_index(x_column)
+    model = genai.GenerativeModel("gemini-3.6-flash")
 
-            st.subheader("📊 Visualization")
+    columns = list(df.columns)
 
-            st.bar_chart(chart_data[y_column])
+    sample_data = df.head(20).to_string(index=False)
+
+    prompt = f"""
+You are an expert data visualization analyst.
+
+Your job is to select the BEST chart for the SQL RESULT.
+
+USER QUESTION:
+{question}
+
+SQL QUERY:
+{query}
+
+RESULT COLUMNS:
+{columns}
+
+RESULT DATA:
+{sample_data}
+
+IMPORTANT:
+The user's question is the most important instruction.
+
+If the user asks:
+- "by industry" → industry must be the X-axis.
+- "by account" → account/account_name must be the X-axis.
+- "by country" → country must be the X-axis.
+- "by month" → month/date must be the X-axis.
+- "by year" → year must be the X-axis.
+- "over time" → use a date/time column.
+- "relationship between X and Y" → use scatter chart.
+
+Do NOT select a date/month column unless the user asks for
+time, month, year, date, trend, or over time.
+
+Choose from:
+
+bar
+line
+scatter
+histogram
+pie
+none
+
+Return ONLY:
+
+chart_type: bar
+x_column: exact_column_name
+y_column: exact_column_name
+title: Chart Title
+
+Rules:
+- x_column MUST exist in the result columns.
+- y_column MUST exist in the result columns.
+- Use bar for category comparisons.
+- Use line ONLY for time-based trends.
+- Use scatter ONLY for two numerical variables.
+- Use histogram for one numerical distribution.
+- Use pie only for small part-to-whole comparisons.
+- Use none if no meaningful visualization is possible.
+- Never invent columns.
+- Never use columns that are not in the result.
+- Follow the user's requested grouping exactly.
+"""
+
+    response = model.generate_content(prompt)
+
+    return response.text.strip()
+
+
+def validate_chart_recommendation(recommendation, question, df):
+
+    lines = recommendation.splitlines()
+
+    result = {}
+
+    for line in lines:
+
+        if ":" not in line:
+            continue
+
+        key, value = line.split(":", 1)
+
+        result[key.strip().lower()] = value.strip()
+
+    chart_type = result.get("chart_type", "none").lower()
+    x_column = result.get("x_column", "")
+    y_column = result.get("y_column", "")
+
+    valid_chart_types = [
+        "bar",
+        "line",
+        "scatter",
+        "histogram",
+        "pie",
+        "none"
+    ]
+
+    if chart_type not in valid_chart_types:
+        return None
+
+    if chart_type == "none":
+        return result
+
+    if chart_type != "histogram":
+
+        if x_column not in df.columns:
+            return None
+
+    if y_column and y_column not in df.columns:
+        return None
+
+    # Prevent line charts unless the question asks for time
+    time_words = [
+        "month",
+        "monthly",
+        "year",
+        "yearly",
+        "date",
+        "daily",
+        "weekly",
+        "trend",
+        "over time",
+        "time"
+    ]
+
+    question_lower = question.lower()
+
+    if (
+        chart_type == "line"
+        and not any(word in question_lower for word in time_words)
+    ):
+        return None
+
+    return result
+
+
+def create_visualization(recommendation, df):
+
+    lines = recommendation.splitlines()
+
+    chart_type = ""
+    x_column = ""
+    y_column = ""
+    title = "AI Generated Visualization"
+
+    for line in lines:
+
+        if ":" not in line:
+            continue
+
+        key, value = line.split(":", 1)
+
+        key = key.strip().lower()
+        value = value.strip()
+
+        if key == "chart_type":
+            chart_type = value.lower()
+
+        elif key == "x_column":
+            x_column = value
+
+        elif key == "y_column":
+            y_column = value
+
+        elif key == "title":
+            title = value
+
+    if chart_type == "none":
+        return
+
+    if (
+        x_column not in df.columns
+        and chart_type not in ["histogram"]
+    ):
+        return
+
+    if (
+        y_column not in df.columns
+        and chart_type not in ["histogram"]
+    ):
+        return
+
+    fig = None
+
+    if chart_type == "bar":
+
+        fig, ax = plt.subplots(
+            figsize=(10, 6)
+        )
+
+        sns.barplot(
+            data=df,
+            x=x_column,
+            y=y_column,
+            ax=ax
+        )
+
+        ax.set_title(title)
+        ax.set_xlabel(x_column)
+        ax.set_ylabel(y_column)
+
+        ax.tick_params(
+            axis="x",
+            rotation=45
+        )
+
+    elif chart_type == "line":
+
+        fig, ax = plt.subplots(
+            figsize=(10, 6)
+        )
+
+        sns.lineplot(
+            data=df,
+            x=x_column,
+            y=y_column,
+            marker="o",
+            ax=ax
+        )
+
+        ax.set_title(title)
+        ax.set_xlabel(x_column)
+        ax.set_ylabel(y_column)
+
+        ax.tick_params(
+            axis="x",
+            rotation=45
+        )
+
+    elif chart_type == "scatter":
+
+        fig, ax = plt.subplots(
+            figsize=(10, 6)
+        )
+
+        sns.scatterplot(
+            data=df,
+            x=x_column,
+            y=y_column,
+            ax=ax
+        )
+
+        ax.set_title(title)
+        ax.set_xlabel(x_column)
+        ax.set_ylabel(y_column)
+
+    elif chart_type == "histogram":
+
+        if y_column in df.columns:
+
+            fig, ax = plt.subplots(
+                figsize=(10, 6)
+            )
+
+            sns.histplot(
+                data=df,
+                x=y_column,
+                kde=True,
+                ax=ax
+            )
+
+            ax.set_title(title)
+            ax.set_xlabel(y_column)
+
+    elif chart_type == "pie":
+
+        fig, ax = plt.subplots(
+            figsize=(8, 8)
+        )
+
+        df.set_index(x_column)[
+            y_column
+        ].plot.pie(
+            autopct="%1.1f%%",
+            ax=ax
+        )
+
+        ax.set_title(title)
+        ax.set_ylabel("")
+
+    if fig is not None:
+
+        plt.tight_layout()
+
+        st.pyplot(fig)
+
+        plt.close(fig)
 
 
 def explain_result(question, query, df):
@@ -218,11 +697,15 @@ Rules:
 prompt = ["""
 You are an expert SQL database manager.
 
-Convert the user's question into a valid SQLite SQL query.
+Convert the user's question into a valid SQL query for the selected database.
+
+Database type:
+{database_type}
 
 Rules:
 - Use only tables and columns from the schema.
 - Do not invent table or column names.
+- Use SQL syntax appropriate for the selected database.
 - Return only the SQL query.
 - Do not return explanations or markdown.
 - Format the SQL query on multiple lines so it is easy to read.
@@ -233,10 +716,104 @@ Database Schema:
 {schema}
 """]
 
-# streamlit App
+# ==============================
+# STREAMLIT APP
+# ==============================
 
-st.set_page_config(page_title="SQL Expert", page_icon="🔍")
+st.set_page_config(
+    page_title="AI Analytics Assistant",
+    page_icon="🤖"
+)
+
+
+# ==============================
+# DATABASE DEFAULTS
+# ==============================
+
+DB = "revanstack.db"
+
+database_type = "SQLite"
+mysql_host = ""
+mysql_port = 3306
+mysql_user = ""
+mysql_password = ""
+mysql_database = ""
+
+
+# ==============================
+# SIDEBAR
+# ==============================
+
 with st.sidebar:
+
+    st.title("🤖 AI Analytics")
+
+    page = st.radio(
+        "Navigation",
+        [
+            "💬 SQL Assistant",
+            "🗂️ Database Schema"
+        ]
+    )
+
+    st.divider()
+
+    st.subheader("🗄️ Database")
+
+    database_type = st.radio(
+        "Select database",
+        ["SQLite", "MySQL"],
+        key="database_type"
+    )
+
+    if database_type == "MySQL":
+
+        st.subheader("🔐 MySQL Connection")
+
+        mysql_host = st.text_input(
+            "Host",
+            value="localhost"
+        )
+
+        mysql_port = st.number_input(
+            "Port",
+            value=3306,
+            step=1
+        )
+
+        mysql_user = st.text_input(
+            "Username"
+        )
+
+        mysql_password = st.text_input(
+            "Password",
+            type="password"
+        )
+
+        mysql_database = st.text_input(
+            "Database"
+        )
+
+        if st.button("🔌 Test MySQL Connection"):
+
+            try:
+                connection = connect_mysql(
+                    mysql_host,
+                    mysql_port,
+                    mysql_user,
+                    mysql_password,
+                    mysql_database
+                )
+
+                if connection.is_connected():
+                    st.success("✅ MySQL connection successful!")
+
+                connection.close()
+
+            except Exception as e:
+                st.error(f"❌ MySQL connection failed: {e}")
+
+    st.divider()
 
     st.header("🕘 Query History")
 
@@ -252,88 +829,395 @@ with st.sidebar:
 
         st.write("No queries yet.")
 
-st.title("🤖 AI Analytics Assistant")
-st.caption("Ask questions about your data in natural language")
 
-question = st.text_input("Input : ",key = "input")
+# ==============================
+# MYSQL CONFIGURATION
+# ==============================
 
-submit = st.button("Ask")
+mysql_config = {
+    "host": mysql_host,
+    "port": mysql_port,
+    "user": mysql_user,
+    "password": mysql_password,
+    "database": mysql_database
+}
 
-if submit:
 
-    response = get_response(question, prompt)
+# ==============================
+# SQL ASSISTANT PAGE
+# ==============================
 
-    # Save question to history
-    st.session_state.history.append(question)
+if page == "💬 SQL Assistant":
 
-    st.subheader("💻 Generated SQL")
-    st.code(response, language="sql")
+    st.title("🤖 AI Analytics Assistant")
 
-    data, error = read_sql(response, "revanstack.db")
+    st.caption(
+        "Ask questions about your data in natural language"
+    )
 
-    if error:
+    question = st.text_input(
+        "Ask your question:",
+        key="input"
+    )
 
-        st.warning("SQL query failed. AI is correcting the query...")
+    submit = st.button("🔍 Ask")
 
-        schema = get_schema("revanstack.db")
 
-        fixed_query = fix_sql(
-            response,
-            error,
-            question,
-            schema
-        )
+    # ==============================
+    # SQL QUERY EXECUTION
+    # ==============================
 
-        st.subheader("🔧 Corrected SQL")
-        st.code(fixed_query, language="sql")
+    if submit:
 
-        data, error = read_sql(
-            fixed_query,
-            "revanstack.db"
-        )
+        if not question.strip():
 
-        if error:
-
-            st.error(f"SQL Error: {error}")
+            st.warning("Please enter a question.")
 
         else:
 
-            st.success("Query automatically corrected!")
-
-            st.subheader("📋 Query Result")
-            st.dataframe(
-                data,
-                use_container_width=True
-            )
-
-            show_chart(data)
-
-            st.subheader("📝 AI Analysis")
-
-            explanation = explain_result(
+            response = get_response(
                 question,
-                fixed_query,
-                data
+                prompt,
+                database_type,
+                DB,
+                mysql_config
             )
 
-            st.write(explanation)
+            # Save question to history
+            st.session_state.history.append(
+                question
+            )
 
-    else:
+            st.subheader("💻 Generated SQL")
 
-        st.subheader("📋 Query Result")
-        st.dataframe(
-            data,
-            use_container_width=True
+            st.code(
+                response,
+                language="sql"
+            )
+
+            data, error = execute_query(
+                response,
+                database_type,
+                DB,
+                mysql_config
+            )
+
+
+            # ==============================
+            # SQL ERROR CORRECTION
+            # ==============================
+
+            if error:
+
+                st.warning(
+                    "SQL query failed. "
+                    "AI is correcting the query..."
+                )
+
+                schema = get_schema(
+                    database_type,
+                    DB,
+                    mysql_config
+                )
+
+                fixed_query = fix_sql(
+                    response,
+                    error,
+                    question,
+                    schema,
+                    database_type
+                )
+
+                st.subheader(
+                    "🔧 Corrected SQL"
+                )
+
+                st.code(
+                    fixed_query,
+                    language="sql"
+                )
+
+                data, error = execute_query(
+                    fixed_query,
+                    database_type,
+                    DB,
+                    mysql_config
+                )
+
+
+                if error:
+
+                    st.error(
+                        f"SQL Error: {error}"
+                    )
+
+                else:
+
+                    st.success(
+                        "Query automatically corrected!"
+                    )
+
+                    st.subheader(
+                        "📋 Query Result"
+                    )
+
+                    st.dataframe(
+                        data,
+                        use_container_width=True
+                    )
+
+                    show_chart(
+                        question,
+                        fixed_query,
+                        data
+                    )
+
+                    st.subheader(
+                        "📝 AI Analysis"
+                    )
+
+                    explanation = explain_result(
+                        question,
+                        fixed_query,
+                        data
+                    )
+
+                    st.write(
+                        explanation
+                    )
+
+
+            # ==============================
+            # SUCCESSFUL QUERY
+            # ==============================
+
+            else:
+
+                st.subheader(
+                    "📋 Query Result"
+                )
+
+                st.dataframe(
+                    data,
+                    use_container_width=True
+                )
+
+                show_chart(
+                    question,
+                    response,
+                    data
+                )
+
+                st.subheader(
+                    "📝 AI Analysis"
+                )
+
+                explanation = explain_result(
+                    question,
+                    response,
+                    data
+                )
+
+                st.write(
+                    explanation
+                )
+
+
+# ==============================
+# DATABASE SCHEMA PAGE
+# ==============================
+
+if page == "🗂️ Database Schema":
+
+    st.title(
+        "🗄️ Database Schema"
+    )
+
+    st.caption(
+        "Explore tables, columns, rows and sample data"
+    )
+
+    database_info = get_database_info(
+        database_type,
+        DB,
+        mysql_config
+    )
+
+
+    # ==============================
+    # SCHEMA TABS
+    # ==============================
+
+    tab1, tab2, tab3 = st.tabs([
+        "📊 Overview",
+        "📋 Tables",
+        "🤖 AI Data Guide"
+    ])
+
+
+    # ==============================
+    # OVERVIEW
+    # ==============================
+
+    with tab1:
+
+        total_tables = len(
+            database_info
         )
 
-        show_chart(data)
-
-        st.subheader("📝 AI Analysis")
-
-        explanation = explain_result(
-            question,
-            response,
-            data
+        total_rows = sum(
+            info["rows"]
+            for info in database_info.values()
         )
 
-        st.write(explanation)
+        total_columns = sum(
+            len(info["columns"])
+            for info in database_info.values()
+        )
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric(
+            "Tables",
+            total_tables
+        )
+
+        col2.metric(
+            "Total Rows",
+            f"{total_rows:,}"
+        )
+
+        col3.metric(
+            "Total Columns",
+            total_columns
+        )
+
+
+    # ==============================
+    # TABLES
+    # ==============================
+
+    with tab2:
+
+        table_names = list(
+            database_info.keys()
+        )
+
+        table_tabs = st.tabs(
+            table_names
+        )
+
+        for table_tab, table_name in zip(
+            table_tabs,
+            table_names
+        ):
+
+            with table_tab:
+
+                info = database_info[
+                    table_name
+                ]
+
+                st.subheader(
+                    f"📋 {table_name}"
+                )
+
+                col1, col2 = st.columns(2)
+
+                col1.metric(
+                    "Rows",
+                    f"{info['rows']:,}"
+                )
+
+                col2.metric(
+                    "Columns",
+                    len(info["columns"])
+                )
+
+                st.markdown(
+                    "### 🧱 Columns"
+                )
+
+                column_data = []
+
+                for column in info["columns"]:
+
+                    column_data.append({
+
+                        "Column": column["name"],
+
+                        "Data Type": column["type"],
+
+                        "Not Null":
+                            "Yes"
+                            if column["not_null"]
+                            else "No",
+
+                        "Primary Key":
+                            "Yes"
+                            if column["primary_key"]
+                            else "No"
+                    })
+
+                column_df = pd.DataFrame(
+                    column_data
+                )
+
+                st.dataframe(
+                    column_df,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                st.markdown(
+                    "### 👀 Sample Data"
+                )
+
+                sample_df = get_sample_data(
+                    table_name,
+                    database_type,
+                    DB,
+                    mysql_config
+                )
+
+                st.dataframe(
+                    sample_df,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+
+    # ==============================
+    # AI DATA GUIDE
+    # ==============================
+
+    with tab3:
+
+        st.subheader(
+            "🤖 AI Data Guide"
+        )
+
+        st.write(
+            "Let Gemini analyze your database "
+            "structure and explain what the "
+            "data contains."
+        )
+
+        if st.button(
+            "🔍 Analyze Database"
+        ):
+
+            with st.spinner(
+                "AI is analyzing your database..."
+            ):
+
+                explanation = explain_database(
+                    database_type,
+                    DB,
+                    mysql_config
+                )
+
+            st.markdown(
+                explanation
+            )
+
