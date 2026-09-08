@@ -1,6 +1,6 @@
 # AI Analytics Assistant — Natural Language to SQL
 
-An AI-powered analytics assistant that allows users to interact with SQLite and MySQL databases using natural language instead of manually writing SQL.
+An AI powered analytics assistant that allows users to interact with SQLite and MySQL databases using natural language instead of manually writing SQL.
 
 ## Project Overview
 
